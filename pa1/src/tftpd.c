@@ -9,17 +9,18 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
-#include <stdlib.h> 
+#include <stdlib.h>
+
 #define BLOCK_SIZE 512
 
-int main()
+int main(int argc, char**argv)
 {
 	int isopen = 0;
 	int blocknum;
 	char buf[512];
 	int filedesc;
     int sockfd;
-    struct sockaddr_in server, client;
+    struct sockaddr_in server, client, clientcheck;
     char message[512];
 	char* filename;
 	struct datapack{
@@ -28,7 +29,14 @@ int main()
 		char payload[BLOCK_SIZE];
 	};
 	
+	struct errorpack{
+		uint16_t opcode;
+		uint16_t errorcode;
+		char error_message[BLOCK_SIZE];
+	};
+	
 	struct datapack pack;
+	struct errorpack errpack;
 	
     /* Create and bind a UDP socket */
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -53,10 +61,8 @@ int main()
         recvfrom(sockfd, message, sizeof(message) - 1,
                              0, (struct sockaddr *) &client, &len);
 		
-		//filedesc = open("testfile.txt", O_WRONLY | O_APPEND);
 		if (message[1] == 1)
 		{
-			
 			char* path = "../data/";
 			filename = &message[2];
 			//printf("%s", filename);
@@ -68,6 +74,29 @@ int main()
 			filedesc = open(filenamewpath, O_RDONLY);
 			isopen = 1;
 			blocknum = 0;
+		}
+		else if(message[1] == 2)
+		{
+			errpack.opcode = htons(5);
+			errpack.errorcode = htons(2);
+			sprintf(errpack.error_message, "writing not allowed!");
+			int textlen = strlen("writing not allowed!");
+			int errpacksize = textlen + 4;
+			
+			sendto(sockfd, &errpack, (size_t)errpacksize, 0,
+				(struct sockaddr *) &client, len);	
+			
+		}
+		else if(message[1] == 3)
+		{
+			errpack.opcode = htons(5);
+			errpack.errorcode = htons(2);
+			sprintf(errpack.error_message, "writing not allowed!");
+			int textlen = strlen("uploading not allowed!");
+			int errpacksize = textlen + 4;
+			
+			sendto(sockfd, &errpack, (size_t)errpacksize, 0,
+				(struct sockaddr *) &client, len);
 		}
 		else if (message[1] == 4)
 		{
