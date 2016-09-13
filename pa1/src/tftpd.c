@@ -15,8 +15,9 @@
 
 int main(int argc, char**argv)
 {
+	int packsize;
 	int isopen = 0;
-	int blocknum;
+	int blocknum = 0;
 	char buf[512];
 	int filedesc;
     int sockfd;
@@ -38,6 +39,11 @@ int main(int argc, char**argv)
 	struct datapack pack;
 	struct errorpack errpack;
 	
+	if(argc < 2) {
+		printf("You must supply a port number to run the server");
+		exit(0);
+	}
+	
     /* Create and bind a UDP socket */
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     memset(&server, 0, sizeof(server));
@@ -48,82 +54,139 @@ int main(int argc, char**argv)
      * values.
      */
     server.sin_addr.s_addr = htonl(INADDR_ANY);
-    server.sin_port = htons(7329);
+    server.sin_port = htons(atoi(argv[1]));
     bind(sockfd, (struct sockaddr *) &server, (socklen_t) sizeof(server));
 
     for (;;) {
-        /* Receive up to one byte less than declared, because it will
-         * be NUL-terminated later.
-         */
-				fflush(stdout);
-		 
+		
+		fd_set rfds;
+        struct timeval tv;
+        int retval;
+
+        /* Check whether there is data on the socket fd. */
+		FD_ZERO(&rfds);
+        FD_SET(sockfd, &rfds);
+
+                /* Wait for five seconds. */
+        tv.tv_sec = 5;
+        tv.tv_usec = 0;
+        retval = select(sockfd + 1, &rfds, NULL, NULL, &tv);
+		
+        if (retval == -1) {
+            perror("select()");
+            } else if (retval > 0) {
+             /* Data is available, receive it. */		
+		
         socklen_t len = (socklen_t) sizeof(client);
         recvfrom(sockfd, message, sizeof(message) - 1,
                              0, (struct sockaddr *) &client, &len);
 		
 		if (message[1] == 1)
 		{
-			char* path = "../data/";
+			fflush(stdout);
+			// copy client info so we it can
+			// be verified later
+			clientcheck.sin_port = client.sin_port;
+			clientcheck.sin_addr = client.sin_addr;
+			char* path = argv[2];
 			filename = &message[2];
-			//printf("%s", filename);
-			char * filenamewpath = malloc(strlen(filename) + 1 + strlen(path));
+			char * filenamewpath = malloc(strlen(filename) + strlen(path) + 1);
 			filenamewpath[0] = '\0';
 			strcat(filenamewpath, path);
 			strcat(filenamewpath, filename);
-			//printf("%s \n", filenamewpath);
 			filedesc = open(filenamewpath, O_RDONLY);
-			isopen = 1;
-			blocknum = 0;
+			if(filedesc < 0)
+			{
+				errpack.opcode = htons(5);
+				errpack.errorcode = htons(1);
+				sprintf(errpack.error_message, "file not found!");
+				int textlen = strlen("file not found!");
+				int errpacksize = textlen + 5;
+				errpack.error_message[textlen] = '\0';
+				sendto(sockfd, &errpack, (size_t)errpacksize, 0,
+				(struct sockaddr *) &client, len);	
+				continue;
+			}
+			else
+			{
+				isopen = 1;
+				blocknum = 0;
+			}
 		}
+		// writing should not be allowed
 		else if(message[1] == 2)
 		{
 			errpack.opcode = htons(5);
 			errpack.errorcode = htons(2);
 			sprintf(errpack.error_message, "writing not allowed!");
 			int textlen = strlen("writing not allowed!");
-			int errpacksize = textlen + 4;
-			
+			int errpacksize = textlen + 5;
+			errpack.error_message[textlen] = '\0';
 			sendto(sockfd, &errpack, (size_t)errpacksize, 0,
 				(struct sockaddr *) &client, len);	
-			
+			continue;
 		}
+		// uploading should not be allowed
 		else if(message[1] == 3)
 		{
 			errpack.opcode = htons(5);
 			errpack.errorcode = htons(2);
 			sprintf(errpack.error_message, "writing not allowed!");
 			int textlen = strlen("uploading not allowed!");
-			int errpacksize = textlen + 4;
-			
+			int errpacksize = textlen + 5;
+			errpack.error_message[textlen] = '\0';
 			sendto(sockfd, &errpack, (size_t)errpacksize, 0,
 				(struct sockaddr *) &client, len);
+			continue;
 		}
-		else if (message[1] == 4)
-		{
-			printf("message 4");
-		}
-		
-		// if filedescriptor is open
-		if (isopen)
-		{
-			blocknum++;
-			int packsize = read(filedesc, buf, BLOCK_SIZE);
-			printf("filingur1");
-			memcpy(pack.payload, buf, packsize);
-			printf("filingur2");
-			
-			pack.opcode = htons(3);
-			pack.blockno = htons(blocknum);
-			packsize += 4;
-			
-			if(packsize < 516)
-			{
-				close(filedesc);
-				isopen = 0;
+		else if(message[1] == 4) {
+			printf("message er 4");
+			// Check if the client is the same one that made the RRQ.
+			if(client.sin_addr.s_addr != clientcheck.sin_addr.s_addr 
+			|| client.sin_port != clientcheck.sin_port) {
+				printf("message er 4");
+				errpack.opcode = htons(5);
+				errpack.errorcode = htons(2);
+				sprintf(errpack.error_message, "Access violation.");
+				int textlen = strlen("Access violation.");
+				int errpacksize = textlen + 5;
+				errpack.error_message[textlen] = '\0';
+				sendto(sockfd, &errpack, (size_t)errpacksize, 0,
+					(struct sockaddr *) &client, len);
+				continue;
 			}
-			sendto(sockfd, &pack, (size_t)packsize, 0,
-            (struct sockaddr *) &client, len);
 		}
+		// if filedescriptor is open
+			if (isopen)
+			{
+				blocknum++;
+				if((packsize = read(filedesc, buf, BLOCK_SIZE)) < 0) {
+					if(isopen) {
+						printf("Error: failed to read %s\n", filename);
+					}
+				}
+				memcpy(pack.payload, buf, packsize);
+				
+				pack.opcode = htons(3);
+				pack.blockno = htons(blocknum);
+				packsize += 4;
+				
+				if(packsize < 516)
+				{
+					if(close(filedesc) < 0)
+					{
+						printf("error closing file descriptor");
+					}
+					isopen = 0;
+				}
+				sendto(sockfd, &pack, (size_t)packsize, 0,
+				(struct sockaddr *) &client, len);
+			}
+		}
+		else {
+            fprintf(stdout, "No message in five seconds.\n");
+            fflush(stdout);
+        }
 		fflush(stdout);
     }
 }
